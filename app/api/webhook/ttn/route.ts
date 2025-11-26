@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/server"
 import { getCurrentWeather } from "@/lib/weather"
+import { applyFloodFilters, type RawReading } from "@/lib/flood-filters"
 import { type NextRequest, NextResponse } from "next/server"
 
 interface TTNWebhookPayload {
@@ -240,23 +241,27 @@ export async function POST(request: NextRequest) {
     }
 
     console.log("[v0] Inserting sensor reading...")
-    const { error: readingError } = await supabase.from("sensor_readings").insert({
-      sensor_id: sensorId,
-      device_id: deviceId,
-      distance_mm: distanceMm,
-      battery_level: batteryLevel,
-      signal_strength: rxMetadata?.rssi || null,
-      latitude: sensorData?.latitude || null,
-      longitude: sensorData?.longitude || null,
-      location_description: sensorData?.location_description || null,
-      // Weather data from API (South Delray, FL)
-      ambient_temperature: weatherData?.ambient_temperature || null,
-      ambient_humidity: weatherData?.ambient_humidity || null,
-      cloud_cover: weatherData?.cloud_cover || null,
-      weather_condition: weatherData?.weather_condition || null,
-      raw_payload: payload,
-      received_at: receivedAt,
-    })
+    const { data: insertedReading, error: readingError } = await supabase
+      .from("sensor_readings")
+      .insert({
+        sensor_id: sensorId,
+        device_id: deviceId,
+        distance_mm: distanceMm,
+        battery_level: batteryLevel,
+        signal_strength: rxMetadata?.rssi || null,
+        latitude: sensorData?.latitude || null,
+        longitude: sensorData?.longitude || null,
+        location_description: sensorData?.location_description || null,
+        // Weather data from API (South Delray, FL)
+        ambient_temperature: weatherData?.ambient_temperature || null,
+        ambient_humidity: weatherData?.ambient_humidity || null,
+        cloud_cover: weatherData?.cloud_cover || null,
+        weather_condition: weatherData?.weather_condition || null,
+        raw_payload: payload,
+        received_at: receivedAt,
+      })
+      .select("id")
+      .single()
 
     if (readingError) {
       console.error("[v0] Error inserting reading:", readingError)
@@ -270,7 +275,95 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log("[v0] ✓ Successfully stored sensor data for device:", deviceId)
+    console.log("[v0] ✓ Successfully stored raw sensor data for device:", deviceId)
+
+    let analyticsResult = null
+    if (distanceMm !== null && sensorId) {
+      try {
+        console.log("[v0] Running analytics processing...")
+
+        // Fetch recent readings for this sensor to run through filters
+        const { data: recentReadings } = await supabase
+          .from("sensor_readings")
+          .select(
+            "id, sensor_id, device_id, distance_mm, battery_level, signal_strength, ambient_temperature, ambient_humidity, cloud_cover, weather_condition, received_at",
+          )
+          .eq("sensor_id", sensorId)
+          .not("distance_mm", "is", null)
+          .order("received_at", { ascending: true })
+          .limit(100) // Process last 100 readings for context
+
+        if (recentReadings && recentReadings.length > 0) {
+          // Convert to filter format
+          const rawForFilter: RawReading[] = recentReadings.map((r) => ({
+            sensorId: r.sensor_id,
+            t_ms: new Date(r.received_at).getTime(),
+            distance_mm: Number(r.distance_mm),
+          }))
+
+          // Apply NYC flood filters
+          const processed = applyFloodFilters(rawForFilter)
+
+          // Find the result for the current reading
+          const currentResult = processed.find((p) => p.t_ms === new Date(receivedAt).getTime())
+
+          if (currentResult && currentResult.nycValid && !currentResult.zAnomaly) {
+            // Store clean reading
+            const cleanReading = {
+              sensor_reading_id: insertedReading.id,
+              sensor_id: sensorId,
+              device_id: deviceId,
+              distance_mm: currentResult.depth_mm !== null ? currentResult.depth_mm : distanceMm,
+              battery_level: batteryLevel,
+              signal_strength: rxMetadata?.rssi || null,
+              ambient_temperature: weatherData?.ambient_temperature || null,
+              ambient_humidity: weatherData?.ambient_humidity || null,
+              cloud_cover: weatherData?.cloud_cover || null,
+              weather_condition: weatherData?.weather_condition || null,
+              received_at: receivedAt,
+            }
+
+            const { error: cleanError } = await supabase.from("sensor_readings_clean").insert(cleanReading)
+
+            if (cleanError) {
+              console.error("[v0] Error inserting clean reading:", cleanError)
+            } else {
+              console.log("[v0] ✓ Successfully stored clean sensor data")
+              analyticsResult = {
+                stored: true,
+                depth_mm: cleanReading.distance_mm,
+                filters_applied: {
+                  noiseFloor: currentResult.noiseFloorApplied,
+                  gradient: currentResult.filteredGradient,
+                  blip: currentResult.filteredBlip,
+                  box: currentResult.filteredBox,
+                },
+                zScore: currentResult.zScore,
+              }
+            }
+          } else {
+            console.log("[v0] Reading filtered out by analytics:", {
+              nycValid: currentResult?.nycValid,
+              zAnomaly: currentResult?.zAnomaly,
+              filteredGradient: currentResult?.filteredGradient,
+              filteredBlip: currentResult?.filteredBlip,
+              filteredBox: currentResult?.filteredBox,
+            })
+            analyticsResult = {
+              stored: false,
+              reason: currentResult
+                ? currentResult.zAnomaly
+                  ? "z-score anomaly"
+                  : "failed NYC filters"
+                : "no matching processed reading",
+            }
+          }
+        }
+      } catch (analyticsError) {
+        console.error("[v0] Analytics processing error:", analyticsError)
+        // Don't fail the webhook, just log the error
+      }
+    }
 
     return NextResponse.json({
       success: true,
@@ -283,6 +376,7 @@ export async function POST(request: NextRequest) {
         signal_strength: rxMetadata?.rssi,
         weather: weatherData,
       },
+      analytics: analyticsResult,
     })
   } catch (error) {
     console.error("[v0] Webhook error:", error)
