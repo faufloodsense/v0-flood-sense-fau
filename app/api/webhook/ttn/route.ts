@@ -1,7 +1,39 @@
 import { createServiceClient } from "@/lib/supabase/server"
 import { getCurrentWeather } from "@/lib/weather"
-import { applyFloodFilters, type RawReading } from "@/lib/flood-filters"
 import { type NextRequest, NextResponse } from "next/server"
+
+/**
+ * Calculate z-score for anomaly detection
+ * Formula: z = (x - μ) / σ
+ * Where x is the current value, μ is the mean, σ is the standard deviation
+ * Reference: Standard statistical z-score for outlier detection
+ * https://en.wikipedia.org/wiki/Standard_score
+ */
+function calculateZScore(currentValue: number, historicalValues: number[]): number | null {
+  if (historicalValues.length === 0) return null
+
+  // Calculate mean (μ)
+  const mean = historicalValues.reduce((sum, val) => sum + val, 0) / historicalValues.length
+
+  // Calculate standard deviation (σ)
+  const squaredDiffs = historicalValues.map((val) => Math.pow(val - mean, 2))
+  const variance = squaredDiffs.reduce((sum, val) => sum + val, 0) / historicalValues.length
+  const stdDev = Math.sqrt(variance)
+
+  // Avoid division by zero - if all values are the same, stdDev = 0
+  if (stdDev === 0) {
+    // If current value equals mean, z-score is 0; otherwise it's an anomaly
+    return currentValue === mean ? 0 : Number.POSITIVE_INFINITY
+  }
+
+  // Calculate z-score
+  const zScore = Math.abs(currentValue - mean) / stdDev
+  return zScore
+}
+
+// Z-score configuration
+const Z_SCORE_WINDOW = 15 // Number of previous readings to consider
+const Z_SCORE_THRESHOLD = 3 // Readings with z-score > 3 are anomalies
 
 interface TTNWebhookPayload {
   name?: string
@@ -252,13 +284,13 @@ export async function POST(request: NextRequest) {
         latitude: sensorData?.latitude || null,
         longitude: sensorData?.longitude || null,
         location_description: sensorData?.location_description || null,
-        // Weather data from API (South Delray, FL)
         ambient_temperature: weatherData?.ambient_temperature || null,
         ambient_humidity: weatherData?.ambient_humidity || null,
         cloud_cover: weatherData?.cloud_cover || null,
         weather_condition: weatherData?.weather_condition || null,
         raw_payload: payload,
         received_at: receivedAt,
+        // is_valid defaults to false in the database
       })
       .select("id")
       .single()
@@ -275,94 +307,72 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log("[v0] ✓ Successfully stored raw sensor data for device:", deviceId)
+    console.log("[v0] ✓ Successfully stored sensor reading with ID:", insertedReading.id)
 
-    let analyticsResult = null
+    let isValid = true // Default to true
+    let zScore: number | null = null
+    let validationReason = ""
+
     if (distanceMm !== null && sensorId) {
-      try {
-        console.log("[v0] Running analytics processing...")
+      // Fetch the last Z_SCORE_WINDOW readings for this sensor (excluding the one we just inserted)
+      const { data: historicalReadings, error: historyError } = await supabase
+        .from("sensor_readings")
+        .select("distance_mm")
+        .eq("sensor_id", sensorId)
+        .not("distance_mm", "is", null)
+        .neq("id", insertedReading.id) // Exclude current reading
+        .order("received_at", { ascending: false })
+        .limit(Z_SCORE_WINDOW)
 
-        // Fetch recent readings for this sensor to run through filters
-        const { data: recentReadings } = await supabase
-          .from("sensor_readings")
-          .select(
-            "id, sensor_id, device_id, distance_mm, battery_level, signal_strength, ambient_temperature, ambient_humidity, cloud_cover, weather_condition, received_at",
-          )
-          .eq("sensor_id", sensorId)
-          .not("distance_mm", "is", null)
-          .order("received_at", { ascending: true })
-          .limit(100) // Process last 100 readings for context
+      if (historyError) {
+        console.error("[v0] Error fetching historical readings:", historyError)
+        validationReason = "Error fetching history, defaulting to valid"
+      } else {
+        const historyCount = historicalReadings?.length || 0
+        console.log(`[v0] Found ${historyCount} historical readings for z-score calculation`)
 
-        if (recentReadings && recentReadings.length > 0) {
-          // Convert to filter format
-          const rawForFilter: RawReading[] = recentReadings.map((r) => ({
-            sensorId: r.sensor_id,
-            t_ms: new Date(r.received_at).getTime(),
-            distance_mm: Number(r.distance_mm),
-          }))
+        if (historyCount < Z_SCORE_WINDOW) {
+          // Not enough historical data - mark as valid (first few readings)
+          isValid = true
+          validationReason = `Insufficient history (${historyCount}/${Z_SCORE_WINDOW}), marking as valid`
+          console.log("[v0]", validationReason)
+        } else {
+          // Calculate z-score using historical values
+          const historicalValues = historicalReadings.map((r) => Number(r.distance_mm))
+          zScore = calculateZScore(Number(distanceMm), historicalValues)
 
-          // Apply NYC flood filters
-          const processed = applyFloodFilters(rawForFilter)
+          console.log("[v0] Z-score calculation:", {
+            currentValue: distanceMm,
+            historicalValues: historicalValues.slice(0, 5), // Log first 5 for brevity
+            zScore: zScore,
+            threshold: Z_SCORE_THRESHOLD,
+          })
 
-          // Find the result for the current reading
-          const currentResult = processed.find((p) => p.t_ms === new Date(receivedAt).getTime())
-
-          if (currentResult && currentResult.nycValid && !currentResult.zAnomaly) {
-            // Store clean reading
-            const cleanReading = {
-              sensor_reading_id: insertedReading.id,
-              sensor_id: sensorId,
-              device_id: deviceId,
-              distance_mm: currentResult.depth_mm !== null ? currentResult.depth_mm : distanceMm,
-              battery_level: batteryLevel,
-              signal_strength: rxMetadata?.rssi || null,
-              ambient_temperature: weatherData?.ambient_temperature || null,
-              ambient_humidity: weatherData?.ambient_humidity || null,
-              cloud_cover: weatherData?.cloud_cover || null,
-              weather_condition: weatherData?.weather_condition || null,
-              received_at: receivedAt,
-            }
-
-            const { error: cleanError } = await supabase.from("sensor_readings_clean").insert(cleanReading)
-
-            if (cleanError) {
-              console.error("[v0] Error inserting clean reading:", cleanError)
-            } else {
-              console.log("[v0] ✓ Successfully stored clean sensor data")
-              analyticsResult = {
-                stored: true,
-                depth_mm: cleanReading.distance_mm,
-                filters_applied: {
-                  noiseFloor: currentResult.noiseFloorApplied,
-                  gradient: currentResult.filteredGradient,
-                  blip: currentResult.filteredBlip,
-                  box: currentResult.filteredBox,
-                },
-                zScore: currentResult.zScore,
-              }
-            }
+          if (zScore !== null && zScore <= Z_SCORE_THRESHOLD) {
+            isValid = true
+            validationReason = `Z-score ${zScore.toFixed(2)} <= ${Z_SCORE_THRESHOLD}, valid reading`
           } else {
-            console.log("[v0] Reading filtered out by analytics:", {
-              nycValid: currentResult?.nycValid,
-              zAnomaly: currentResult?.zAnomaly,
-              filteredGradient: currentResult?.filteredGradient,
-              filteredBlip: currentResult?.filteredBlip,
-              filteredBox: currentResult?.filteredBox,
-            })
-            analyticsResult = {
-              stored: false,
-              reason: currentResult
-                ? currentResult.zAnomaly
-                  ? "z-score anomaly"
-                  : "failed NYC filters"
-                : "no matching processed reading",
-            }
+            isValid = false
+            validationReason = `Z-score ${zScore?.toFixed(2) || "Infinity"} > ${Z_SCORE_THRESHOLD}, anomaly detected`
           }
+          console.log("[v0]", validationReason)
         }
-      } catch (analyticsError) {
-        console.error("[v0] Analytics processing error:", analyticsError)
-        // Don't fail the webhook, just log the error
       }
+
+      // Update the is_valid field for this reading
+      const { error: updateError } = await supabase
+        .from("sensor_readings")
+        .update({ is_valid: isValid })
+        .eq("id", insertedReading.id)
+
+      if (updateError) {
+        console.error("[v0] Error updating is_valid:", updateError)
+      } else {
+        console.log("[v0] ✓ Updated is_valid to:", isValid)
+      }
+    } else {
+      validationReason = "No distance_mm value, skipping validation"
+      console.log("[v0]", validationReason)
     }
 
     return NextResponse.json({
@@ -370,13 +380,20 @@ export async function POST(request: NextRequest) {
       message: "Data received and stored",
       device_id: deviceId,
       sensor_id: sensorId,
+      reading_id: insertedReading.id,
       processed_data: {
         distance_mm: distanceMm,
         battery_percentage: batteryLevel,
         signal_strength: rxMetadata?.rssi,
         weather: weatherData,
       },
-      analytics: analyticsResult,
+      validation: {
+        is_valid: isValid,
+        z_score: zScore,
+        threshold: Z_SCORE_THRESHOLD,
+        window_size: Z_SCORE_WINDOW,
+        reason: validationReason,
+      },
     })
   } catch (error) {
     console.error("[v0] Webhook error:", error)
