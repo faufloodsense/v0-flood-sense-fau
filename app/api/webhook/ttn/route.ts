@@ -263,6 +263,37 @@ export async function POST(request: NextRequest) {
       console.error("[v0] Error fetching sensor location:", sensorDataError)
     }
 
+    let waterDepth: number | null = null
+    if (distanceMm !== null && sensorId && !isBenchmark) {
+      const { data: benchmarkReading, error: benchmarkError } = await supabase
+        .from("sensor_readings")
+        .select("distance_mm")
+        .eq("sensor_id", sensorId)
+        .eq("is_benchmark", true)
+        .order("received_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (benchmarkError) {
+        console.error("[v0] Error fetching benchmark reading:", benchmarkError)
+      } else if (benchmarkReading?.distance_mm) {
+        // water_depth = benchmark distance - current distance
+        // Positive value means water has risen (closer to sensor)
+        waterDepth = Number(benchmarkReading.distance_mm) - Number(distanceMm)
+        console.log("[v0] Water depth calculated:", {
+          benchmark_mm: benchmarkReading.distance_mm,
+          current_mm: distanceMm,
+          water_depth_mm: waterDepth,
+        })
+      } else {
+        console.log("[v0] No benchmark reading found for sensor, water_depth will be null")
+      }
+    } else if (isBenchmark) {
+      // Benchmark reading has 0 water depth by definition
+      waterDepth = 0
+      console.log("[v0] Benchmark reading - setting water_depth to 0")
+    }
+
     let weatherData = null
     if (sensorData?.latitude && sensorData?.longitude) {
       console.log(`[v0] Fetching weather for sensor location: ${sensorData.latitude}, ${sensorData.longitude}`)
@@ -295,6 +326,7 @@ export async function POST(request: NextRequest) {
         raw_payload: payload,
         received_at: receivedAt,
         is_benchmark: isBenchmark,
+        water_depth: waterDepth, // Added water_depth to insert
         // is_valid defaults to false in the database
       })
       .select("id")
@@ -406,6 +438,7 @@ export async function POST(request: NextRequest) {
         battery_percentage: batteryLevel,
         signal_strength: rxMetadata?.rssi,
         weather: weatherData,
+        water_depth: waterDepth, // Added water_depth to response
       },
       validation: {
         is_valid: isValid,
