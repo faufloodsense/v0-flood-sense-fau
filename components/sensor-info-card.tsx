@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { MapPin, Battery, Clock, Activity } from "lucide-react"
+import { MapPin, Battery, Clock, Activity, Droplets, AlertTriangle } from "lucide-react"
 import { CalibrationButton } from "@/components/calibration-button"
 
 interface SensorInfoCardProps {
@@ -15,10 +15,57 @@ interface SensorInfoCardProps {
     battery: number
     lastUpdate: string
     notes?: string
+    waterDepth?: number | null
+  }
+}
+
+function getFloodStatus(waterDepth: number | null | undefined): {
+  level: string
+  color: string
+  bgColor: string
+  borderColor: string
+} {
+  if (waterDepth === null || waterDepth === undefined) {
+    return { level: "No Data", color: "text-muted-foreground", bgColor: "bg-muted/50", borderColor: "border-muted" }
+  }
+  if (waterDepth < 10) {
+    return { level: "No Flooding", color: "text-success", bgColor: "bg-success/10", borderColor: "border-success/20" }
+  }
+  if (waterDepth < 50) {
+    return {
+      level: "Low Flooding",
+      color: "text-yellow-500",
+      bgColor: "bg-yellow-500/10",
+      borderColor: "border-yellow-500/20",
+    }
+  }
+  if (waterDepth < 150) {
+    return {
+      level: "Moderate Flooding",
+      color: "text-orange-500",
+      bgColor: "bg-orange-500/10",
+      borderColor: "border-orange-500/20",
+    }
+  }
+  if (waterDepth < 300) {
+    return {
+      level: "Major Flooding",
+      color: "text-red-500",
+      bgColor: "bg-red-500/10",
+      borderColor: "border-red-500/20",
+    }
+  }
+  return {
+    level: "Extreme Flooding",
+    color: "text-red-700",
+    bgColor: "bg-red-700/10",
+    borderColor: "border-red-700/20",
   }
 }
 
 export function SensorInfoCard({ sensor }: SensorInfoCardProps) {
+  const floodStatus = getFloodStatus(sensor.waterDepth)
+
   return (
     <Card className="bg-card border-border">
       <CardHeader>
@@ -38,6 +85,31 @@ export function SensorInfoCard({ sensor }: SensorInfoCardProps) {
       <CardContent>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <Droplets className="h-5 w-5 text-blue-500 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Water Level</p>
+                <p className="text-lg font-semibold text-foreground">
+                  {sensor.waterDepth !== null && sensor.waterDepth !== undefined
+                    ? `${sensor.waterDepth.toFixed(1)} mm`
+                    : "No data"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <AlertTriangle className={`h-5 w-5 mt-0.5 ${floodStatus.color}`} />
+              <div>
+                <p className="text-sm font-medium text-foreground">Flood Status</p>
+                <Badge
+                  variant="outline"
+                  className={`mt-1 ${floodStatus.bgColor} ${floodStatus.color} ${floodStatus.borderColor}`}
+                >
+                  {floodStatus.level}
+                </Badge>
+              </div>
+            </div>
+
             <div className="flex items-start gap-3">
               <MapPin className="h-5 w-5 text-muted-foreground mt-0.5" />
               <div>

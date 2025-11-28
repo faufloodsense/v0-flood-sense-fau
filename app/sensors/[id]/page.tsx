@@ -60,6 +60,7 @@ export default async function SensorDetailPage({ params }: { params: Promise<{ i
       ? formatTimeAgo(new Date(sensor.latest_reading.received_at))
       : "No data",
     notes: sensor.notes,
+    waterDepth: sensor.latest_reading?.water_depth ?? null,
   }
 
   return (
