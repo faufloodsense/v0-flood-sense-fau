@@ -23,7 +23,7 @@ async function getSensorWithLatestReading(sensorId: string) {
     .eq("sensor_id", sensorId)
     .order("received_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   // Get total reading count
   const { count } = await supabase

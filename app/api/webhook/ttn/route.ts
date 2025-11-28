@@ -199,7 +199,7 @@ export async function POST(request: NextRequest) {
     // Check if sensor exists, if not create it
     const { data: existingSensor, error: sensorQueryError } = await supabase
       .from("sensors")
-      .select("id")
+      .select("id, awaiting_calibration")
       .eq("device_id", deviceId)
       .single()
 
@@ -217,6 +217,7 @@ export async function POST(request: NextRequest) {
     }
 
     let sensorId = existingSensor?.id
+    const isBenchmark = existingSensor?.awaiting_calibration || false
 
     if (!existingSensor) {
       console.log("[v0] Creating new sensor for device:", deviceId)
@@ -247,6 +248,9 @@ export async function POST(request: NextRequest) {
       console.log("[v0] Created sensor with ID:", sensorId)
     } else {
       console.log("[v0] Using existing sensor ID:", sensorId)
+      if (isBenchmark) {
+        console.log("[v0] Sensor is awaiting calibration - this reading will be marked as BENCHMARK")
+      }
     }
 
     const { data: sensorData, error: sensorDataError } = await supabase
@@ -290,6 +294,7 @@ export async function POST(request: NextRequest) {
         weather_condition: weatherData?.weather_condition || null,
         raw_payload: payload,
         received_at: receivedAt,
+        is_benchmark: isBenchmark,
         // is_valid defaults to false in the database
       })
       .select("id")
@@ -309,18 +314,35 @@ export async function POST(request: NextRequest) {
 
     console.log("[v0] ✓ Successfully stored sensor reading with ID:", insertedReading.id)
 
+    if (isBenchmark && sensorId) {
+      console.log("[v0] Resetting awaiting_calibration flag for sensor")
+      const { error: resetError } = await supabase
+        .from("sensors")
+        .update({ awaiting_calibration: false })
+        .eq("id", sensorId)
+
+      if (resetError) {
+        console.error("[v0] Error resetting calibration flag:", resetError)
+      } else {
+        console.log("[v0] ✓ Calibration flag reset - benchmark reading captured")
+      }
+    }
+
     let isValid = true // Default to true
     let zScore: number | null = null
     let validationReason = ""
 
-    if (distanceMm !== null && sensorId) {
-      // Fetch the last Z_SCORE_WINDOW readings for this sensor (excluding the one we just inserted)
+    if (isBenchmark) {
+      isValid = true
+      validationReason = "Benchmark/calibration reading - marked as valid"
+      console.log("[v0]", validationReason)
+    } else if (distanceMm !== null && sensorId) {
       const { data: historicalReadings, error: historyError } = await supabase
         .from("sensor_readings")
         .select("distance_mm")
         .eq("sensor_id", sensorId)
         .not("distance_mm", "is", null)
-        .neq("id", insertedReading.id) // Exclude current reading
+        .neq("id", insertedReading.id)
         .order("received_at", { ascending: false })
         .limit(Z_SCORE_WINDOW)
 
@@ -332,18 +354,16 @@ export async function POST(request: NextRequest) {
         console.log(`[v0] Found ${historyCount} historical readings for z-score calculation`)
 
         if (historyCount < Z_SCORE_WINDOW) {
-          // Not enough historical data - mark as valid (first few readings)
           isValid = true
           validationReason = `Insufficient history (${historyCount}/${Z_SCORE_WINDOW}), marking as valid`
           console.log("[v0]", validationReason)
         } else {
-          // Calculate z-score using historical values
           const historicalValues = historicalReadings.map((r) => Number(r.distance_mm))
           zScore = calculateZScore(Number(distanceMm), historicalValues)
 
           console.log("[v0] Z-score calculation:", {
             currentValue: distanceMm,
-            historicalValues: historicalValues.slice(0, 5), // Log first 5 for brevity
+            historicalValues: historicalValues.slice(0, 5),
             zScore: zScore,
             threshold: Z_SCORE_THRESHOLD,
           })
@@ -358,21 +378,20 @@ export async function POST(request: NextRequest) {
           console.log("[v0]", validationReason)
         }
       }
-
-      // Update the is_valid field for this reading
-      const { error: updateError } = await supabase
-        .from("sensor_readings")
-        .update({ is_valid: isValid })
-        .eq("id", insertedReading.id)
-
-      if (updateError) {
-        console.error("[v0] Error updating is_valid:", updateError)
-      } else {
-        console.log("[v0] ✓ Updated is_valid to:", isValid)
-      }
     } else {
       validationReason = "No distance_mm value, skipping validation"
       console.log("[v0]", validationReason)
+    }
+
+    const { error: updateError } = await supabase
+      .from("sensor_readings")
+      .update({ is_valid: isValid })
+      .eq("id", insertedReading.id)
+
+    if (updateError) {
+      console.error("[v0] Error updating is_valid:", updateError)
+    } else {
+      console.log("[v0] ✓ Updated is_valid to:", isValid)
     }
 
     return NextResponse.json({
@@ -381,6 +400,7 @@ export async function POST(request: NextRequest) {
       device_id: deviceId,
       sensor_id: sensorId,
       reading_id: insertedReading.id,
+      is_benchmark: isBenchmark,
       processed_data: {
         distance_mm: distanceMm,
         battery_percentage: batteryLevel,
@@ -416,7 +436,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Optional: Add GET endpoint for testing
 export async function GET() {
   return NextResponse.json({
     message: "TTN Webhook endpoint is active",
