@@ -279,12 +279,25 @@ export async function POST(request: NextRequest) {
       } else if (benchmarkReading?.distance_mm) {
         // water_depth = benchmark distance - current distance
         // Positive value means water has risen (closer to sensor)
-        waterDepth = Number(benchmarkReading.distance_mm) - Number(distanceMm)
-        console.log("[v0] Water depth calculated:", {
-          benchmark_mm: benchmarkReading.distance_mm,
-          current_mm: distanceMm,
-          water_depth_mm: waterDepth,
-        })
+        const rawWaterDepth = Number(benchmarkReading.distance_mm) - Number(distanceMm)
+
+        const WATER_DEPTH_TOLERANCE = 10 // mm
+        if (Math.abs(rawWaterDepth) <= WATER_DEPTH_TOLERANCE) {
+          waterDepth = 0
+          console.log("[v0] Water depth within tolerance (±10mm), setting to 0:", {
+            benchmark_mm: benchmarkReading.distance_mm,
+            current_mm: distanceMm,
+            raw_water_depth_mm: rawWaterDepth,
+            final_water_depth_mm: waterDepth,
+          })
+        } else {
+          waterDepth = rawWaterDepth
+          console.log("[v0] Water depth calculated:", {
+            benchmark_mm: benchmarkReading.distance_mm,
+            current_mm: distanceMm,
+            water_depth_mm: waterDepth,
+          })
+        }
       } else {
         console.log("[v0] No benchmark reading found for sensor, water_depth will be null")
       }
