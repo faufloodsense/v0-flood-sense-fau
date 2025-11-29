@@ -32,7 +32,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     let query = supabase
       .from("sensor_readings")
-      .select("received_at, distance_mm, battery_level, is_valid")
+      .select("received_at, distance_mm, battery_level, is_valid, water_depth")
       .eq("sensor_id", id)
       .gte("received_at", since)
       .order("received_at", { ascending: true })
@@ -52,6 +52,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       distance_mm: r.distance_mm ?? null,
       battery: r.battery_level ?? null,
       is_valid: r.is_valid ?? true,
+      water_depth: r.water_depth ?? null,
     }))
 
     return NextResponse.json({ series })

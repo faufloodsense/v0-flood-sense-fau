@@ -17,6 +17,7 @@ export interface Sensor {
     ambient_humidity?: number
     cloud_cover?: number
     weather_condition?: string
+    water_depth?: number | null
   }
 }
 
@@ -108,6 +109,7 @@ export async function getSensorsWithLatestReadings(): Promise<Sensor[]> {
               latestReading.ambient_humidity != null ? Number(latestReading.ambient_humidity) : undefined,
             cloud_cover: latestReading.cloud_cover != null ? Number(latestReading.cloud_cover) : undefined,
             weather_condition: latestReading.weather_condition || undefined,
+            water_depth: latestReading.water_depth != null ? Number(latestReading.water_depth) : null,
           }
         : undefined,
     }

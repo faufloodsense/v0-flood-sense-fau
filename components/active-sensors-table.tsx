@@ -1,12 +1,32 @@
+"use client"
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getSensorsWithLatestReadings } from "@/lib/dashboard-data"
 import Link from "next/link"
 
-export async function ActiveSensorsTable() {
-  const sensors = await getSensorsWithLatestReadings()
+interface Sensor {
+  id: string
+  device_id: string
+  name: string
+  latitude: number
+  longitude: number
+  location_description: string
+  status: string
+  notes?: string
+  latest_reading?: {
+    distance_mm: number
+    battery_level: number
+    received_at: string
+    water_depth?: number | null
+  }
+}
 
+interface ActiveSensorsTableProps {
+  sensors: Sensor[]
+}
+
+export function ActiveSensorsTable({ sensors }: ActiveSensorsTableProps) {
   return (
     <Card className="bg-card border-border">
       <CardHeader>
@@ -29,7 +49,7 @@ export async function ActiveSensorsTable() {
             {sensors.map((sensor) => (
               <TableRow key={sensor.device_id} className="border-border hover:bg-secondary/50 cursor-pointer">
                 <TableCell className="font-mono font-semibold text-foreground">
-                  <Link href={`/sensors/${sensor.device_id}`} className="hover:underline">
+                  <Link href={`/sensors/${sensor.id}`} className="hover:underline">
                     {sensor.device_id}
                   </Link>
                 </TableCell>
@@ -58,9 +78,9 @@ export async function ActiveSensorsTable() {
                     <div className="w-16 h-2 bg-secondary rounded-full overflow-hidden">
                       <div
                         className={`h-full ${
-                          (sensor.latest_reading?.battery_level ?? 0 > 80)
+                          (sensor.latest_reading?.battery_level ?? 0) > 80
                             ? "bg-success"
-                            : (sensor.latest_reading?.battery_level ?? 0 > 50)
+                            : (sensor.latest_reading?.battery_level ?? 0) > 50
                               ? "bg-warning"
                               : "bg-destructive"
                         }`}

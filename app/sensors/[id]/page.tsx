@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { SensorDetailHeader } from "@/components/sensor-detail-header"
 import { SensorInfoCard } from "@/components/sensor-info-card"
 import { SensorHistoryChart } from "@/components/sensor-history-chart"
+import { WaterDepthChart } from "@/components/water-depth-chart"
 import { SensorLocationMap } from "@/components/sensor-location-map"
 import { PaginatedReadingsTable } from "@/components/paginated-readings-table"
 
@@ -82,6 +83,8 @@ export default async function SensorDetailPage({ params }: { params: Promise<{ i
         </div>
 
         <SensorHistoryChart sensorId={id} />
+
+        <WaterDepthChart sensorId={id} />
 
         <PaginatedReadingsTable sensorId={id} deviceId={sensor.device_id} totalCount={sensor.total_readings} />
       </main>

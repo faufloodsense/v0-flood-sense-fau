@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { MapPin, Battery, Clock, Activity, Droplets, AlertTriangle } from "lucide-react"
 import { CalibrationButton } from "@/components/calibration-button"
+import { getFloodStatus } from "@/lib/flood-status"
 
 interface SensorInfoCardProps {
   sensor: {
@@ -16,50 +17,6 @@ interface SensorInfoCardProps {
     lastUpdate: string
     notes?: string
     waterDepth?: number | null
-  }
-}
-
-function getFloodStatus(waterDepth: number | null | undefined): {
-  level: string
-  color: string
-  bgColor: string
-  borderColor: string
-} {
-  if (waterDepth === null || waterDepth === undefined) {
-    return { level: "No Data", color: "text-muted-foreground", bgColor: "bg-muted/50", borderColor: "border-muted" }
-  }
-  if (waterDepth < 10) {
-    return { level: "No Flooding", color: "text-success", bgColor: "bg-success/10", borderColor: "border-success/20" }
-  }
-  if (waterDepth < 50) {
-    return {
-      level: "Low Flooding",
-      color: "text-yellow-500",
-      bgColor: "bg-yellow-500/10",
-      borderColor: "border-yellow-500/20",
-    }
-  }
-  if (waterDepth < 150) {
-    return {
-      level: "Moderate Flooding",
-      color: "text-orange-500",
-      bgColor: "bg-orange-500/10",
-      borderColor: "border-orange-500/20",
-    }
-  }
-  if (waterDepth < 300) {
-    return {
-      level: "Major Flooding",
-      color: "text-red-500",
-      bgColor: "bg-red-500/10",
-      borderColor: "border-red-500/20",
-    }
-  }
-  return {
-    level: "Extreme Flooding",
-    color: "text-red-700",
-    bgColor: "bg-red-700/10",
-    borderColor: "border-red-700/20",
   }
 }
 
