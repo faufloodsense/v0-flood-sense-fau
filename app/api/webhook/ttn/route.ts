@@ -179,18 +179,59 @@ export async function POST(request: NextRequest) {
     // TTN sends 'distance' (in mm) not 'distance_mm', and 'battery' (in volts) not 'voltage_mv'
     const distanceMm = decodedPayload.distance_mm || decodedPayload.distance || null
 
-    // Handle battery level - TTN may send 'battery' in volts (e.g., 3.814)
-    let batteryLevel = batteryPercentage || null
-    if (!batteryLevel && decodedPayload.battery) {
-      const voltage = decodedPayload.battery // Already in volts
-      // LiPo battery: ~4.2V = 100%, ~3.0V = 0%
-      batteryLevel = Math.max(0, Math.min(100, ((voltage - 3.0) / 1.2) * 100))
-    } else if (!batteryLevel && decodedPayload.voltage_mv) {
-      const voltage = decodedPayload.voltage_mv / 1000 // Convert mV to V
-      batteryLevel = Math.max(0, Math.min(100, ((voltage - 3.0) / 1.2) * 100))
+    // Handle battery level - TTN sends 'battery' in decoded_payload as voltage (e.g., 3.737V)
+    // Battery: 4.2V = 100% (fully charged), 3.0V = 0% (empty)
+    let batteryLevel: number | null = null
+    const MIN_VOLTAGE = 3.0 // Empty battery voltage
+    const MAX_VOLTAGE = 4.2 // Fully charged battery voltage
+    const VOLTAGE_RANGE = MAX_VOLTAGE - MIN_VOLTAGE // 1.2V range
+
+    console.log("[v0] Raw battery values from payload:", {
+      decoded_payload_battery: decodedPayload.battery,
+      decoded_payload_battery_type: typeof decodedPayload.battery,
+      last_battery_percentage: batteryPercentage,
+      voltage_mv: decodedPayload.voltage_mv,
+    })
+
+    if (decodedPayload.battery !== undefined && decodedPayload.battery !== null) {
+      // Primary source: decoded_payload.battery (voltage in V, e.g., 3.737)
+      const rawBattery = decodedPayload.battery
+      const voltage = typeof rawBattery === "string" ? Number.parseFloat(rawBattery) : Number(rawBattery)
+
+      if (!isNaN(voltage) && voltage > 0) {
+        // Calculate percentage: ((V - 3.0) / 1.2) * 100
+        const rawPercentage = ((voltage - MIN_VOLTAGE) / VOLTAGE_RANGE) * 100
+        batteryLevel = Math.round(Math.max(0, Math.min(100, rawPercentage)))
+
+        console.log("[v0] Battery conversion calculation:", {
+          raw_value: rawBattery,
+          raw_value_type: typeof rawBattery,
+          parsed_voltage: voltage,
+          formula: `((${voltage} - ${MIN_VOLTAGE}) / ${VOLTAGE_RANGE}) * 100`,
+          raw_percentage: rawPercentage,
+          final_percentage: batteryLevel,
+        })
+      } else {
+        console.error("[v0] Invalid battery voltage value:", rawBattery)
+      }
+    } else if (batteryPercentage !== undefined && batteryPercentage !== null) {
+      // Fallback: TTN's last_battery_percentage if available
+      batteryLevel = Math.round(Number(batteryPercentage))
+      console.log("[v0] Using TTN battery percentage:", batteryLevel)
+    } else if (decodedPayload.voltage_mv) {
+      // Fallback: voltage in millivolts
+      const voltage = Number(decodedPayload.voltage_mv) / 1000
+      const rawPercentage = ((voltage - MIN_VOLTAGE) / VOLTAGE_RANGE) * 100
+      batteryLevel = Math.round(Math.max(0, Math.min(100, rawPercentage)))
+
+      console.log("[v0] Battery converted from voltage_mv:", {
+        raw_voltage_mv: decodedPayload.voltage_mv,
+        voltage: voltage,
+        calculated_percentage: batteryLevel,
+      })
     }
 
-    console.log("[v0] Converted values - distance_mm:", distanceMm, "battery:", batteryLevel)
+    console.log("[v0] Final converted values - distance_mm:", distanceMm, "battery_level:", batteryLevel)
 
     // Create Supabase service client (bypasses RLS for webhook operations)
     const supabase = createServiceClient()
